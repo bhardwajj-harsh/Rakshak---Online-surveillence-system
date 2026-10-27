@@ -1,0 +1,1 @@
+"""RAKSHAK Backend Application."""

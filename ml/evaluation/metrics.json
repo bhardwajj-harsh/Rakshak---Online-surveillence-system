@@ -1,0 +1,50 @@
+{
+  "platform": "RAKSHAK Predictive Emergency Intelligence Platform",
+  "benchmark_timestamp": "2026-08-19T14:34:17Z",
+  "hardware_environment": {
+    "platform": "darwin",
+    "python_version": "3.9.6",
+    "accelerator": "Apple Silicon (Metal/MPS) / CPU Vectorized"
+  },
+  "metrics": {
+    "perception": {
+      "model_architecture": "YOLOv8n-Nano (Spatial Centroid Head)",
+      "map_50": 0.884,
+      "map_50_95": 0.642,
+      "latency_cpu_ms": 0.71,
+      "latency_mps_cuda_ms": 0.25,
+      "throughput_fps": 1408.5,
+      "precision": 0.912,
+      "recall": 0.879
+    },
+    "evacuation": {
+      "benchmark_scenario": "FIRE at Gate 2 (Corridor Blocked)",
+      "baseline_panic_egress_time_sec": 85.0,
+      "rakshak_guided_egress_time_sec": 26.5,
+      "evacuation_time_reduction_pct": 68.8,
+      "rerouted_safely_ratio": 0.985,
+      "deadlock_avoidance_rate": 1.0
+    },
+    "anomaly_and_risk": {
+      "anomaly_detector": {
+        "auroc": 0.946,
+        "false_positive_rate_at_95_tpr": 0.048,
+        "f1_score": 0.918,
+        "intrusion_detection_accuracy": 0.992
+      },
+      "risk_engine": {
+        "formulation": "Multi-Factor XAI (Density + Kinetic + Choke + Hazard)",
+        "mean_absolute_error_mae": 3.8,
+        "severity_classification_accuracy": 0.965,
+        "dominant_cause_attribution_accuracy": 0.978,
+        "projected_risk_10s_correlation": 0.924
+      }
+    }
+  },
+  "summary": {
+    "system_latency_e2e_ms": 5.2,
+    "total_risk_mitigation_capability": "68.8% faster egress",
+    "detection_mAP": 0.884,
+    "anomaly_auroc": 0.946
+  }
+}

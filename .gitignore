@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+env/
+.env
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+.eggs/
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# ML models (large files)
+/ml/models/*.pt
+/ml/models/*.onnx
+/ml/datasets/raw/
+
+# Uploads
+uploads/
+*.mp4
+*.avi
+*.mov
+
+# Test
+.coverage
+htmlcov/
+.pytest_cache/
+coverage/
+
+# Environment
+.env.local
+.env.*.local
