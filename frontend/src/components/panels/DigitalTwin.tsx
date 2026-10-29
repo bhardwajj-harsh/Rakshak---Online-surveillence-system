@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useBrowserCameraIngest } from '../../hooks/useBrowserCameraIngest'
 import {
   Camera,
   Cpu,
@@ -123,6 +124,8 @@ export default function DigitalTwin({ liveState }: DigitalTwinProps) {
   const [cameraView, setCameraView] = useState<'DUAL' | 'CAM0' | 'CAM1'>('DUAL')
   const [hoveredZone, setHoveredZone] = useState<HoveredZoneInfo | null>(null)
   const [isSwitchingMode, setIsSwitchingMode] = useState(false)
+
+  const browserCameras = useBrowserCameraIngest(viewMode === 'REAL_VIDEO')
 
   const people = liveState.people || []
   const zoneDensities = liveState.crowd?.zone_densities || {}

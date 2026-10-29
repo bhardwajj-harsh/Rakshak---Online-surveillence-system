@@ -12,12 +12,13 @@ import math
 import os
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 import cv2
 import numpy as np
 
 from app.core.types import Detection, TrackedPerson
+from app.ml.camera_capture import open_camera
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,8 @@ class CameraSource:
     FRAME_WIDTH = 640
     FRAME_HEIGHT = 360
 
+    FeedSource = Literal["hardware", "browser", "synthetic"]
+
     def __init__(
         self,
         camera_id: int,
@@ -35,54 +38,108 @@ class CameraSource:
         sector_label: str,
         coord_offset_x: float = 0.0,
         coord_offset_y: float = 0.0,
+        device_index: Optional[int] = None,
     ):
         self.camera_id = camera_id
+        self.device_index = device_index if device_index is not None else camera_id
         self.name = name
         self.sector_label = sector_label
         self.coord_offset_x = coord_offset_x
         self.coord_offset_y = coord_offset_y
         self.cap: Optional[cv2.VideoCapture] = None
         self.is_hardware_active = False
-        self._hardware_probed = False
+        self.feed_source: CameraSource.FeedSource = "synthetic"
         self._lock = threading.Lock()
         self._frame_count = 0
         self._last_frame_time = time.time()
+        self._last_hardware_attempt = 0.0
+        self._hardware_retry_interval_s = 5.0
         self._fps = 30.0
         self._inference_time_ms = 14.5
         self._bg_sub = cv2.createBackgroundSubtractorMOG2(history=35, varThreshold=30, detectShadows=False)
+        self._browser_frame: Optional[np.ndarray] = None
+        self._browser_frame_time = 0.0
+        self._browser_frame_ttl_s = 2.0
 
-        # Check if hardware camera is explicitly requested via env (defaults to true)
-        enable_hw = os.getenv("ENABLE_HARDWARE_CAMERA", "true").lower() in ("true", "1", "yes")
-        if enable_hw:
-            self._init_hardware()
-        else:
-            self._hardware_probed = True
+        self._enable_hardware = os.getenv("ENABLE_HARDWARE_CAMERA", "true").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
 
-    def _init_hardware(self):
-        """Attempts to open physical hardware capture (camera_id: 0 or 1) safely once."""
-        if self._hardware_probed and not self.is_hardware_active:
-            return
+    def _init_hardware(self) -> bool:
+        """Open physical capture (MacBook index 0, iPhone Continuity index 1 on macOS)."""
+        if not self._enable_hardware:
+            return False
 
-        self._hardware_probed = True
+        now = time.time()
+        if self.is_hardware_active:
+            return True
+        if now - self._last_hardware_attempt < self._hardware_retry_interval_s:
+            return False
+        self._last_hardware_attempt = now
+
         with self._lock:
+            if self.cap is not None:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                self.cap = None
+
             try:
-                # Attempt opening video capture non-blockingly
-                cap = cv2.VideoCapture(self.camera_id)
-                if cap and cap.isOpened():
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        self.cap = cap
-                        self.is_hardware_active = True
-                        logger.info(f"Activated hardware camera {self.camera_id}: {self.name}")
-                        return
-                    cap.release()
+                cap = open_camera(self.device_index)
+                if cap is not None:
+                    self.cap = cap
+                    self.is_hardware_active = True
+                    self.feed_source = "hardware"
+                    logger.info(
+                        "Activated hardware camera logical=%s device=%s: %s",
+                        self.camera_id,
+                        self.device_index,
+                        self.name,
+                    )
+                    return True
             except Exception as e:
-                logger.warning(f"Could not initialize camera {self.camera_id}: {e}")
+                logger.warning(
+                    "Could not initialize camera logical=%s device=%s: %s",
+                    self.camera_id,
+                    self.device_index,
+                    e,
+                )
+
             self.cap = None
             self.is_hardware_active = False
+            if self.feed_source == "hardware":
+                self.feed_source = "synthetic"
+            return False
+
+    def ingest_browser_frame(self, jpeg_bytes: bytes) -> bool:
+        """Accept a JPEG frame from the browser (getUserMedia) when Python lacks camera access."""
+        arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None or frame.size == 0:
+            return False
+        with self._lock:
+            self._browser_frame = cv2.resize(frame, (self.FRAME_WIDTH, self.FRAME_HEIGHT))
+            self._browser_frame_time = time.time()
+            self.feed_source = "browser"
+        return True
 
     def read_frame(self) -> Tuple[np.ndarray, bool]:
-        """Reads frame from physical capture or falls back to synthetic station CCTV."""
+        """Reads frame from browser ingest, hardware capture, or synthetic CCTV."""
+        now = time.time()
+        with self._lock:
+            if (
+                self._browser_frame is not None
+                and now - self._browser_frame_time <= self._browser_frame_ttl_s
+            ):
+                self._frame_count += 1
+                return self._browser_frame.copy(), True
+
+        if not self.is_hardware_active:
+            self._init_hardware()
+
         if self.is_hardware_active and self.cap is not None:
             with self._lock:
                 try:
@@ -91,6 +148,7 @@ class CameraSource:
                         if ret and frame is not None:
                             resized = cv2.resize(frame, (self.FRAME_WIDTH, self.FRAME_HEIGHT))
                             self._frame_count += 1
+                            self.feed_source = "hardware"
                             return resized, True
                     self.is_hardware_active = False
                     if self.cap:
@@ -105,7 +163,7 @@ class CameraSource:
                             pass
                         self.cap = None
 
-        # Fallback to simulated CCTV frame
+        self.feed_source = "synthetic"
         self._frame_count += 1
         return self._generate_synthetic_cctv_frame(), False
 
@@ -149,9 +207,12 @@ class MultiCameraPerceptionEngine:
         # Initialize dual camera sources:
         # Camera 0: MacBook Built-in (Platform 1 / West Concourse)
         # Camera 1: iPhone Wireless / Continuity (Gate 1 / East Concourse)
+        device_0 = int(os.getenv("CAMERA_0_DEVICE_INDEX", "0"))
+        device_1 = int(os.getenv("CAMERA_1_DEVICE_INDEX", "1"))
         self.cameras: Dict[int, CameraSource] = {
             0: CameraSource(
                 camera_id=0,
+                device_index=device_0,
                 name="CAM-01 (MacBook Built-in)",
                 sector_label="PLATFORM 1 - CAM 01",
                 coord_offset_x=15.0,
@@ -159,6 +220,7 @@ class MultiCameraPerceptionEngine:
             ),
             1: CameraSource(
                 camera_id=1,
+                device_index=device_1,
                 name="CAM-02 (iPhone Wireless)",
                 sector_label="GATE 1 - CAM 02",
                 coord_offset_x=55.0,
@@ -423,7 +485,12 @@ class MultiCameraPerceptionEngine:
         cv2.line(annotated, (0, 26), (cam.FRAME_WIDTH, 26), (35, 45, 65), 1)
 
         time_str = time.strftime("%Y-%m-%d %H:%M:%S IST")
-        tag = "HARDWARE LIVE" if is_hardware else "CCTV STREAM"
+        if cam.feed_source == "browser":
+            tag = "BROWSER LIVE"
+        elif is_hardware:
+            tag = "HARDWARE LIVE"
+        else:
+            tag = "CCTV STREAM"
         cv2.putText(
             annotated,
             f"{cam.sector_label} [{tag}]  {time_str}",
@@ -492,6 +559,26 @@ class MultiCameraPerceptionEngine:
                 pass
             time.sleep(1.0 / 30.0)
 
+    def ingest_browser_frame(self, camera_id: int, jpeg_bytes: bytes) -> bool:
+        cam = self.cameras.get(camera_id)
+        if cam is None:
+            return False
+        return cam.ingest_browser_frame(jpeg_bytes)
+
+    def reinit_hardware_cameras(self) -> dict:
+        """Force a fresh hardware open attempt (e.g. after granting macOS camera permission)."""
+        results: dict = {}
+        for cam_id, cam in self.cameras.items():
+            cam._last_hardware_attempt = 0.0
+            ok = cam._init_hardware()
+            results[str(cam_id)] = {
+                "hardware_active": cam.is_hardware_active,
+                "feed_source": cam.feed_source,
+                "device_index": cam.device_index,
+                "reinit_ok": ok,
+            }
+        return results
+
     def get_metrics(self) -> dict:
         cam0 = self.cameras[0]
         cam1 = self.cameras[1]
@@ -504,6 +591,8 @@ class MultiCameraPerceptionEngine:
                 "fps": cam0._fps,
                 "latency_ms": cam0._inference_time_ms,
                 "hardware_active": cam0.is_hardware_active,
+                "feed_source": cam0.feed_source,
+                "device_index": cam0.device_index,
             },
             "camera_1": {
                 "name": cam1.name,
@@ -511,6 +600,8 @@ class MultiCameraPerceptionEngine:
                 "fps": cam1._fps,
                 "latency_ms": cam1._inference_time_ms,
                 "hardware_active": cam1.is_hardware_active,
+                "feed_source": cam1.feed_source,
+                "device_index": cam1.device_index,
             },
             "stream_active": True,
         }

@@ -48,6 +48,25 @@ async def video_status():
     return metrics
 
 
+@video_router.post("/ingest/{camera_id}")
+async def ingest_browser_frame(camera_id: int, file: UploadFile = File(...)):
+    """Ingest JPEG frames from browser getUserMedia (MacBook / iPhone Continuity)."""
+    if camera_id not in (0, 1):
+        raise HTTPException(status_code=400, detail="camera_id must be 0 or 1")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty frame payload")
+    if not perception_engine.ingest_browser_frame(camera_id, data):
+        raise HTTPException(status_code=400, detail="Invalid JPEG frame")
+    return {"camera_id": camera_id, "status": "ingested", "bytes": len(data)}
+
+
+@video_router.post("/reinit")
+async def reinit_cameras():
+    """Retry opening MacBook / iPhone hardware captures (after macOS camera permission)."""
+    return perception_engine.reinit_hardware_cameras()
+
+
 @video_router.post("/mode")
 async def switch_mode(request: ModeSwitchRequest):
     """Switch pipeline input between SIMULATION and REAL_PERCEPTION."""
